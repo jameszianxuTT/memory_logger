@@ -2,6 +2,14 @@
 
 Out-of-band host memory logger for forge workloads, with optional device DRAM sampling.
 
+## Use Cases
+
+- As a developer running long workloads on remote machines, I want quick PNG snapshots to review memory behavior after a run.
+- As a debugger, I want to correlate RSS, swap, and OOM trends over time to identify memory pressure and instability.
+- As a hardware/software integrator, I want optional device DRAM tracking to compare host vs device memory movement.
+- As a remote user over SSH, I want a tunneled live dashboard in my local browser while the process is still running.
+- As an analyst, I want to re-render one or multiple CSV logs to compare runs with a unified time axis.
+
 ## Metrics
 
 - Process RSS over time
@@ -23,22 +31,22 @@ pip install psutil matplotlib plotly
 
 ## Common usage
 
-### 1) Monitor a PID and write PNG
+### 1) Monitor by exact process name (default PNG output)
 
 ```bash
-python3 memory_logger.py --pid 12345 --interval 1.0 --csv pid_memory.csv --png pid_memory.png
+python3 memory_logger.py --name worker
 ```
 
-### 2) Monitor by exact process name
+### 2) Monitor by PID (when needed)
 
 ```bash
-python3 memory_logger.py --name worker --interval 1.0 --csv worker_memory.csv --png worker_memory.png
+python3 memory_logger.py --pid 12345
 ```
 
 ### 3) Enable device DRAM sampling
 
 ```bash
-python3 memory_logger.py --pid 12345 --device-dram --csv pid_memory.csv --png pid_memory.png
+python3 memory_logger.py --name worker --device-dram
 ```
 
 Warning: device DRAM SHM files can be stale if a previous process exited uncleanly. If DRAM numbers look wrong (e.g. in SPMD mode, all devices should show lockstep allocation so min/max/avg should be the same), clean up stale regions before re-running:
@@ -47,7 +55,7 @@ Warning: device DRAM SHM files can be stale if a previous process exited unclean
 rm -rf /dev/shm/tt_device_*_memory
 ```
 
-### 4) Render from an existing CSV
+### 4) Render from an existing CSV (eg. useful if proc under profiling crashes from OOM or host dies)
 
 ```bash
 python3 memory_logger.py --from-csv pid_memory.csv --png
@@ -57,7 +65,7 @@ python3 memory_logger.py --from-csv pid_memory.csv --html
 ### 5) Render multiple CSVs in one PNG (stacked subplots, unified x-axis)
 
 ```bash
-python3 memory_logger.py --from-csv run_a.csv --from-csv run_b.csv --png merged_pid_memory.png
+python3 memory_logger.py --from-csv run_a.csv --from-csv run_b.csv
 ```
 
 ## Live mode
@@ -65,12 +73,12 @@ python3 memory_logger.py --from-csv run_a.csv --from-csv run_b.csv --png merged_
 Live mode monitors a single process and serves a local web dashboard from the remote machine:
 
 ```bash
-python3 memory_logger.py --pid 12345 --live
+python3 memory_logger.py --name worker --live
 ```
 
 Then access from your local browser via SSH tunnel.
 
-Optional advanced flags (defaults shown): `--live-host 127.0.0.1`, `--live-port 8765`, `--live-refresh-ms 1000`.
+Optional advanced flags (only if overriding defaults): `--live-host`, `--live-port`, `--live-refresh-ms`.
 
 ### SSH tunnel (direct)
 
