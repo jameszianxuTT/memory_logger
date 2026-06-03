@@ -162,6 +162,28 @@ def bytes_to_mib(num_bytes: int) -> float:
     return num_bytes / (1024 * 1024)
 
 
+def _row_float(row: dict[str, str], *keys: str, default: float = 0.0) -> float:
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+    return default
+
+
+def _row_int_or_none(row: dict[str, str], *keys: str) -> int | None:
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
 def get_oom_score(pid: int) -> int | None:
     """Read OOM score from /proc/[pid]/oom_score (Linux only, range 0-1000)."""
     try:
@@ -306,14 +328,14 @@ def generate_plot(csv_path: Path, png_path: Path, process_name: str):
         has_dram = "dram_avg_mib" in fieldnames
         for row in reader:
             timestamps.append(datetime.fromisoformat(row["timestamp_utc"]))
-            rss_mib.append(float(row["rss_mib"]))
-            swap_mib.append(float(row["swap_mib"]))
-            oom_scores.append(int(row["oom_score"]) if row.get("oom_score") else None)
+            rss_mib.append(_row_float(row, "rss_mib"))
+            swap_mib.append(_row_float(row, "swap_mib"))
+            oom_scores.append(_row_int_or_none(row, "oom_score"))
             if has_dram:
-                dram_avg_mib.append(float(row["dram_avg_mib"]) if row["dram_avg_mib"] else 0.0)
-                dram_min_mib.append(float(row["dram_min_mib"]) if row["dram_min_mib"] else 0.0)
-                dram_max_mib.append(float(row["dram_max_mib"]) if row["dram_max_mib"] else 0.0)
-                dram_chip_count.append(int(row["dram_chip_count"]) if row["dram_chip_count"] else 0)
+                dram_avg_mib.append(_row_float(row, "dram_avg_mib"))
+                dram_min_mib.append(_row_float(row, "dram_min_mib"))
+                dram_max_mib.append(_row_float(row, "dram_max_mib"))
+                dram_chip_count.append(_row_int_or_none(row, "dram_chip_count") or 0)
 
     if not timestamps:
         print("No samples collected, skipping plot.")
@@ -391,9 +413,9 @@ def generate_plot_multi_csv(csv_paths: list[Path], png_path: Path):
             reader = csv.DictReader(f)
             for row in reader:
                 timestamps.append(datetime.fromisoformat(row["timestamp_utc"]))
-                rss_mib.append(float(row["rss_mib"]))
-                swap_mib.append(float(row["swap_mib"]))
-                oom_scores.append(int(row["oom_score"]) if row.get("oom_score") else None)
+                rss_mib.append(_row_float(row, "rss_mib"))
+                swap_mib.append(_row_float(row, "swap_mib"))
+                oom_scores.append(_row_int_or_none(row, "oom_score"))
 
         if not timestamps:
             print(f"No samples in {csv_path}, skipping.")
@@ -484,9 +506,9 @@ def generate_plot_html(csv_path: Path, html_path: Path, process_name: str):
         reader = csv.DictReader(f)
         for row in reader:
             timestamps.append(datetime.fromisoformat(row["timestamp_utc"]))
-            rss_mib.append(float(row["rss_mib"]))
-            swap_mib.append(float(row["swap_mib"]))
-            oom_scores.append(int(row["oom_score"]) if row.get("oom_score") else None)
+            rss_mib.append(_row_float(row, "rss_mib"))
+            swap_mib.append(_row_float(row, "swap_mib"))
+            oom_scores.append(_row_int_or_none(row, "oom_score"))
 
     if not timestamps:
         print("No samples collected, skipping interactive plot.")
