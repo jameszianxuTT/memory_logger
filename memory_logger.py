@@ -361,9 +361,11 @@ def generate_plot(csv_path: Path, png_path: Path, process_name: str):
         apply_grid_with_subgrid(ax_dram)
         ax_dram.legend(loc="upper left")
 
-    # x-axis label and formatter on the bottom subplot only
-    axes[-1].set_xlabel("Time (UTC)")
-    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
+    # Show x-axis label/ticks on every subplot for readability in stacked PNGs.
+    for ax in axes:
+        ax.set_xlabel("Time (UTC)")
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
+        ax.tick_params(axis="x", which="both", labelbottom=True)
 
     fig.autofmt_xdate()
     plt.tight_layout()
