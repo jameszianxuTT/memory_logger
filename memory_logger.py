@@ -186,26 +186,6 @@ def get_swap_bytes(pid: int) -> int:
     return 0
 
 
-def get_vmstat_swap() -> tuple[int, int]:
-    """Read pswpin and pswpout from /proc/vmstat (in pages, typically 4 KB each)."""
-    pswpin = 0
-    pswpout = 0
-    try:
-        with open("/proc/vmstat") as f:
-            for line in f:
-                if line.startswith("pswpin "):
-                    pswpin = int(line.split()[1])
-                elif line.startswith("pswpout "):
-                    pswpout = int(line.split()[1])
-    except (FileNotFoundError, PermissionError, ValueError, OSError):
-        pass
-    return pswpin, pswpout
-
-
-def pages_to_mib(pages: int) -> float:
-    return (pages * 4096) / (1024 * 1024)
-
-
 def apply_grid_with_subgrid(ax, y_minor_divisions: int = 2):
     ax.minorticks_on()
     ax.yaxis.set_minor_locator(AutoMinorLocator(y_minor_divisions))
@@ -311,8 +291,6 @@ def generate_plot(csv_path: Path, png_path: Path, process_name: str):
     rss_mib = []
     swap_mib = []
     oom_scores = []
-    pswpin_delta_mib = []
-    pswpout_delta_mib = []
     dram_avg_mib = []
     dram_min_mib = []
     dram_max_mib = []
@@ -321,16 +299,12 @@ def generate_plot(csv_path: Path, png_path: Path, process_name: str):
     with csv_path.open("r", newline="") as f:
         reader = csv.DictReader(f)
         fieldnames = reader.fieldnames or []
-        has_vmstat = "pswpin_delta_mib" in fieldnames
         has_dram = "dram_avg_mib" in fieldnames
         for row in reader:
             timestamps.append(datetime.fromisoformat(row["timestamp_utc"]))
             rss_mib.append(float(row["rss_mib"]))
             swap_mib.append(float(row["swap_mib"]))
             oom_scores.append(int(row["oom_score"]) if row.get("oom_score") else None)
-            if has_vmstat:
-                pswpin_delta_mib.append(float(row["pswpin_delta_mib"]))
-                pswpout_delta_mib.append(float(row["pswpout_delta_mib"]))
             if has_dram:
                 dram_avg_mib.append(float(row["dram_avg_mib"]) if row["dram_avg_mib"] else 0.0)
                 dram_min_mib.append(float(row["dram_min_mib"]) if row["dram_min_mib"] else 0.0)
@@ -341,10 +315,9 @@ def generate_plot(csv_path: Path, png_path: Path, process_name: str):
         print("No samples collected, skipping plot.")
         return
 
-    has_vmstat_data = has_vmstat and any(v > 0 for v in pswpin_delta_mib + pswpout_delta_mib)
     has_dram_data = has_dram and any(v > 0 for v in dram_avg_mib)
 
-    nrows = 1 + int(has_vmstat_data) + int(has_dram_data)
+    nrows = 1 + int(has_dram_data)
     fig, axes = plt.subplots(nrows, 1, figsize=(12, 4.5 * nrows), sharex=True)
     if nrows == 1:
         axes = [axes]
@@ -371,17 +344,6 @@ def generate_plot(csv_path: Path, png_path: Path, process_name: str):
         ax_mem.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
     else:
         ax_mem.legend(loc="upper left")
-
-    # --- subplot 2 (optional): vmstat swap I/O ---
-    if has_vmstat_data:
-        ax_vmstat = axes[row_idx]
-        row_idx += 1
-        ax_vmstat.plot(timestamps, pswpin_delta_mib, linewidth=2, label="Swap In (MiB)", color="tab:green")
-        ax_vmstat.plot(timestamps, pswpout_delta_mib, linewidth=2, label="Swap Out (MiB)", color="tab:purple")
-        ax_vmstat.set_ylabel("Cumulative Swap I/O (MiB)")
-        ax_vmstat.set_title("System-wide Swap I/O (since monitoring started)")
-        apply_grid_with_subgrid(ax_vmstat)
-        ax_vmstat.legend(loc="upper left")
 
     # --- subplot N (optional): device DRAM ---
     if has_dram_data:
@@ -423,34 +385,23 @@ def generate_plot_html(csv_path: Path, html_path: Path, process_name: str):
     rss_mib = []
     swap_mib = []
     oom_scores = []
-    pswpin_delta_mib = []
-    pswpout_delta_mib = []
 
     with csv_path.open("r", newline="") as f:
         reader = csv.DictReader(f)
-        fieldnames = reader.fieldnames or []
-        has_vmstat = "pswpin_delta_mib" in fieldnames
         for row in reader:
             timestamps.append(datetime.fromisoformat(row["timestamp_utc"]))
             rss_mib.append(float(row["rss_mib"]))
             swap_mib.append(float(row["swap_mib"]))
             oom_scores.append(int(row["oom_score"]) if row.get("oom_score") else None)
-            if has_vmstat:
-                pswpin_delta_mib.append(float(row["pswpin_delta_mib"]))
-                pswpout_delta_mib.append(float(row["pswpout_delta_mib"]))
 
     if not timestamps:
         print("No samples collected, skipping interactive plot.")
         return
 
     has_oom_data = any(s is not None for s in oom_scores)
-    has_vmstat_data = has_vmstat and any(v > 0 for v in pswpin_delta_mib + pswpout_delta_mib)
-    nrows = 2 if has_vmstat_data else 1
 
     specs = [[{"secondary_y": has_oom_data}]]
-    if has_vmstat_data:
-        specs.append([{"secondary_y": False}])
-    fig = make_subplots(rows=nrows, cols=1, shared_xaxes=True, vertical_spacing=0.08, specs=specs)
+    fig = make_subplots(rows=1, cols=1, shared_xaxes=True, vertical_spacing=0.08, specs=specs)
 
     fig.add_trace(go.Scatter(x=timestamps, y=rss_mib, mode="lines", name="RSS (MiB)", line={"width": 2, "color": "royalblue"}), row=1, col=1)
     fig.add_trace(go.Scatter(x=timestamps, y=swap_mib, mode="lines", name="Swap (MiB)", line={"width": 2, "color": "orange"}), row=1, col=1)
@@ -462,21 +413,14 @@ def generate_plot_html(csv_path: Path, html_path: Path, process_name: str):
         )
         fig.update_yaxes(title_text="OOM Score (0-1000)", range=[0, 1000], row=1, col=1, secondary_y=True)
     fig.update_yaxes(title_text="Memory (MiB)", row=1, col=1)
-
-    if has_vmstat_data:
-        fig.add_trace(go.Scatter(x=timestamps, y=pswpin_delta_mib, mode="lines", name="Swap In (MiB)", line={"width": 2, "color": "green"}), row=2, col=1)
-        fig.add_trace(go.Scatter(x=timestamps, y=pswpout_delta_mib, mode="lines", name="Swap Out (MiB)", line={"width": 2, "color": "purple"}), row=2, col=1)
-        fig.update_yaxes(title_text="Cumulative Swap I/O (MiB)", row=2, col=1)
-        fig.update_xaxes(title_text="Time (UTC)", row=2, col=1)
-    else:
-        fig.update_xaxes(title_text="Time (UTC)", row=1, col=1)
+    fig.update_xaxes(title_text="Time (UTC)", row=1, col=1)
 
     fig.update_layout(
         title=f"Process Memory Over Time ({process_name})",
         hovermode="x unified",
         legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "left", "x": 0},
         template="plotly_white",
-        height=450 if nrows == 1 else 800,
+        height=450,
     )
     fig.write_html(html_path, include_plotlyjs="cdn")
     print(f"Saved interactive plot: {html_path}")
@@ -519,14 +463,11 @@ def run_monitor(args):
         print("WARNING: --device-dram enabled but no /dev/shm/tt_device_*_memory files found. "
               "Will keep trying each interval.")
 
-    initial_pswpin, initial_pswpout = get_vmstat_swap()
-
     header = [
         "timestamp_utc", "pid", "process_name",
         "rss_bytes", "rss_mib",
         "swap_bytes", "swap_mib",
         "oom_score",
-        "pswpin_delta_mib", "pswpout_delta_mib",
     ]
     if dram_sampler is not None:
         header += list(_DRAM_CSV_COLS)
@@ -558,17 +499,12 @@ def run_monitor(args):
                     print(f"PID {target_pid} exited; stopping sampler.")
                     break
 
-                current_pswpin, current_pswpout = get_vmstat_swap()
-                pswpin_delta = pages_to_mib(current_pswpin - initial_pswpin)
-                pswpout_delta = pages_to_mib(current_pswpout - initial_pswpout)
-
                 ts = datetime.now(timezone.utc).isoformat()
                 row = [
                     ts, target_pid, proc_name,
                     rss_bytes, round(bytes_to_mib(rss_bytes), 3),
                     swap_bytes, round(bytes_to_mib(swap_bytes), 3),
                     oom_score if oom_score is not None else "",
-                    round(pswpin_delta, 3), round(pswpout_delta, 3),
                 ]
 
                 if dram_sampler is not None:
