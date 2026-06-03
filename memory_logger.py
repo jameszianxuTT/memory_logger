@@ -20,6 +20,8 @@ from pathlib import Path
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import psutil
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from matplotlib.ticker import AutoMinorLocator
 
 # ---------------------------------------------------------------------------
@@ -215,6 +217,25 @@ def apply_grid_with_subgrid(ax, y_minor_divisions: int = 2):
     ax.grid(True, which="minor", alpha=0.15, linestyle=":")
 
 
+def _build_png_legend_handles(has_dram_data: bool, has_oom_data: bool):
+    handles = [
+        Line2D([0], [0], color="tab:blue", lw=1.5, label="RSS (MiB)"),
+        Line2D([0], [0], color="tab:orange", lw=1.5, label="Swap (MiB)"),
+    ]
+    if has_dram_data:
+        handles.extend(
+            [
+                Patch(facecolor="tab:green", alpha=0.12, edgecolor="none", label="DRAM Min–Max"),
+                Line2D([0], [0], color="tab:green", lw=1.8, label="DRAM Avg/chip (MiB)"),
+                Line2D([0], [0], color="seagreen", lw=0.8, ls="--", label="DRAM Min/chip (MiB)"),
+                Line2D([0], [0], color="darkgreen", lw=0.8, ls="--", label="DRAM Max/chip (MiB)"),
+            ]
+        )
+    if has_oom_data:
+        handles.append(Line2D([0], [0], color="tab:red", lw=1.5, ls="--", label="OOM Score"))
+    return handles
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -397,34 +418,25 @@ def generate_plot(csv_path: Path, png_path: Path, process_name: str):
         ax_oom.plot(timestamps, oom_scores, linewidth=1.5, label="OOM Score", color="tab:red", linestyle="--")
         ax_oom.set_ylabel("OOM Score (0–1000)")
         ax_oom.set_ylim(0, 1000)
-        lines1, labels1 = ax_mem.get_legend_handles_labels()
-        lines2, labels2 = ax_oom.get_legend_handles_labels()
-        ax_mem.legend(
-            lines1 + lines2,
-            labels1 + labels2,
-            loc="upper center",
-            bbox_to_anchor=(0.5, -0.18),
-            borderaxespad=0.0,
-            fontsize=8,
-            framealpha=0.9,
-            ncol=3,
-        )
-    else:
-        ax_mem.legend(
-            loc="upper center",
-            bbox_to_anchor=(0.5, -0.18),
-            borderaxespad=0.0,
-            fontsize=8,
-            framealpha=0.9,
-            ncol=3,
-        )
 
     ax_mem.set_xlabel("Time (UTC)")
     ax_mem.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
     ax_mem.tick_params(axis="x", which="both", labelbottom=True)
 
+    legend_handles = _build_png_legend_handles(has_dram_data, has_oom_data)
+    fig.legend(
+        handles=legend_handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.01),
+        ncol=4,
+        fontsize=8,
+        framealpha=0.9,
+        columnspacing=1.2,
+        handlelength=2.0,
+    )
+
     fig.autofmt_xdate()
-    plt.tight_layout(rect=[0.0, 0.08, 1.0, 1.0])
+    plt.tight_layout(rect=[0.0, 0.12, 1.0, 1.0])
     plt.savefig(png_path, dpi=150)
     plt.close(fig)
     print(f"Saved plot: {png_path}")
@@ -563,35 +575,29 @@ def generate_plot_multi_csv(csv_paths: list[Path], png_path: Path):
             )
             ax_oom.set_ylabel("OOM Score (0–1000)")
             ax_oom.set_ylim(0, 1000)
-            lines1, labels1 = ax.get_legend_handles_labels()
-            lines2, labels2 = ax_oom.get_legend_handles_labels()
-            ax.legend(
-                lines1 + lines2,
-                labels1 + labels2,
-                loc="upper center",
-                bbox_to_anchor=(0.5, -0.18),
-                borderaxespad=0.0,
-                fontsize=8,
-                framealpha=0.9,
-                ncol=3,
-            )
-        else:
-            ax.legend(
-                loc="upper center",
-                bbox_to_anchor=(0.5, -0.18),
-                borderaxespad=0.0,
-                fontsize=8,
-                framealpha=0.9,
-                ncol=3,
-            )
+            # OOM plotted on secondary axis; legend is managed at figure level.
 
     for ax in axes:
         ax.set_xlabel("Time (UTC)")
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
         ax.tick_params(axis="x", which="both", labelbottom=True)
 
+    has_any_dram_data = any(d["has_dram_data"] for d in datasets)
+    has_any_oom_data = any(any(score is not None for score in d["oom_scores"]) for d in datasets)
+    legend_handles = _build_png_legend_handles(has_any_dram_data, has_any_oom_data)
+    fig.legend(
+        handles=legend_handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.01),
+        ncol=4,
+        fontsize=8,
+        framealpha=0.9,
+        columnspacing=1.2,
+        handlelength=2.0,
+    )
+
     fig.autofmt_xdate()
-    plt.tight_layout(rect=[0.0, 0.08, 1.0, 1.0])
+    plt.tight_layout(rect=[0.0, 0.12, 1.0, 1.0])
     plt.savefig(png_path, dpi=150)
     plt.close(fig)
     print(f"Saved plot: {png_path}")
