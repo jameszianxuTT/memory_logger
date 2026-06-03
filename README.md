@@ -4,11 +4,9 @@ Out-of-band host memory logger for forge workloads, with optional device DRAM sa
 
 ## Use Cases
 
-- As a developer running long workloads on remote machines, I want quick PNG snapshots to review memory behavior after a run.
-- As a debugger, I want to correlate RSS, swap, and OOM trends over time to identify memory pressure and instability.
-- As a hardware/software integrator, I want optional device DRAM tracking to compare host vs device memory movement.
-- As a remote user over SSH, I want a tunneled live dashboard in my local browser while the process is still running.
-- As an analyst, I want to re-render one or multiple CSV logs to compare runs with a unified time axis.
+- Get quick PNG snapshots to review memory behavior after a run, even if the process OOMs
+- Correlate RSS, swap, device DRAM trends over time to identify memory pressure and instability due to specific runtime behaviours
+- Get a live dashboard of memory dynamics in my local browser while the process is still running.
 
 ## Metrics
 
