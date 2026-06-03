@@ -11,11 +11,16 @@ import argparse
 import csv
 import ctypes
 import glob
+import io
+import json
 import mmap
 import os
+import threading
 import time
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
@@ -292,6 +297,29 @@ def parse_args():
             "Sample device DRAM usage from /dev/shm/tt_device_*_memory SHM regions "
             "and add an avg/min/max subplot. Requires tt-metal to be running on this host."
         ),
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Serve a live Plotly dashboard that tails the output CSV.",
+    )
+    parser.add_argument(
+        "--live-host",
+        type=str,
+        default="127.0.0.1",
+        help="Live dashboard bind host (default: 127.0.0.1).",
+    )
+    parser.add_argument(
+        "--live-port",
+        type=int,
+        default=8765,
+        help="Live dashboard bind port (default: 8765).",
+    )
+    parser.add_argument(
+        "--live-refresh-ms",
+        type=int,
+        default=1000,
+        help="Live dashboard refresh interval in milliseconds (default: 1000).",
     )
     return parser.parse_args()
 
@@ -658,6 +686,493 @@ def generate_plot_html(csv_path: Path, html_path: Path, process_name: str):
 
 
 # ---------------------------------------------------------------------------
+# Live dashboard
+# ---------------------------------------------------------------------------
+
+def _build_live_dashboard_html(process_name: str, refresh_ms: int) -> str:
+    safe_name = json.dumps(process_name)
+    return f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Live Memory Dashboard</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    body {{
+      font-family: sans-serif;
+      margin: 0;
+      padding: 12px 16px;
+      background: #fafafa;
+    }}
+    #header {{
+      display: flex;
+      gap: 12px;
+      align-items: baseline;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }}
+    #plot {{
+      width: 100%;
+      height: 78vh;
+      min-height: 520px;
+      background: white;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+    }}
+    .muted {{
+      color: #666;
+    }}
+  </style>
+</head>
+<body>
+  <div id="header">
+    <h2 style="margin: 0;">Live Memory Dashboard</h2>
+    <div id="proc" class="muted"></div>
+    <div id="status" class="muted">Connecting...</div>
+  </div>
+  <div id="plot"></div>
+  <script>
+    const processName = {safe_name};
+    const refreshMs = {refresh_ms};
+    let lastTimestamp = null;
+    let hasOomData = false;
+    let hasDramData = false;
+
+    const traces = [
+      {{ name: "RSS (MiB)", x: [], y: [], mode: "lines", line: {{ width: 1.5, color: "royalblue" }}, yaxis: "y" }},
+      {{ name: "Swap (MiB)", x: [], y: [], mode: "lines", line: {{ width: 1.5, color: "orange" }}, yaxis: "y" }},
+      {{ name: "DRAM Avg/chip (MiB)", x: [], y: [], mode: "lines", line: {{ width: 1.8, color: "green" }}, yaxis: "y", visible: "legendonly" }},
+      {{ name: "DRAM Min/chip (MiB)", x: [], y: [], mode: "lines", line: {{ width: 0.8, color: "seagreen", dash: "dash" }}, yaxis: "y", visible: "legendonly" }},
+      {{ name: "DRAM Max/chip (MiB)", x: [], y: [], mode: "lines", line: {{ width: 0.8, color: "darkgreen", dash: "dash" }}, yaxis: "y", visible: "legendonly" }},
+      {{ name: "OOM Score", x: [], y: [], mode: "lines", line: {{ width: 1.5, color: "red", dash: "dash" }}, yaxis: "y2", visible: "legendonly" }},
+    ];
+
+    const layout = {{
+      title: `Process Memory Over Time (${{processName}})`,
+      margin: {{ t: 48, r: 56, b: 56, l: 70 }},
+      xaxis: {{ title: "Time (UTC)" }},
+      yaxis: {{ title: "Memory (MiB)" }},
+      yaxis2: {{ title: "OOM Score (0-1000)", overlaying: "y", side: "right", range: [0, 1000], visible: false }},
+      legend: {{ orientation: "h", x: 0, y: 1.1 }},
+      hovermode: "x unified",
+      template: "plotly_white"
+    }};
+    Plotly.newPlot("plot", traces, layout, {{ responsive: true }});
+
+    function setStatus(text) {{
+      document.getElementById("status").textContent = text;
+    }}
+
+    function applyVisibility() {{
+      Plotly.restyle("plot", {{ visible: hasDramData ? true : "legendonly" }}, [2]);
+      Plotly.restyle("plot", {{ visible: hasDramData ? true : "legendonly" }}, [3]);
+      Plotly.restyle("plot", {{ visible: hasDramData ? true : "legendonly" }}, [4]);
+      Plotly.restyle("plot", {{ visible: hasOomData ? true : "legendonly" }}, [5]);
+      Plotly.relayout("plot", {{ "yaxis2.visible": hasOomData }});
+    }}
+
+    function queueSample(sample, xUpdates, yUpdates) {{
+      const t = sample.timestamp_utc;
+      xUpdates[0].push(t); yUpdates[0].push(sample.rss_mib);
+      xUpdates[1].push(t); yUpdates[1].push(sample.swap_mib);
+
+      if (sample.oom_score !== null) {{
+        hasOomData = true;
+        xUpdates[5].push(t); yUpdates[5].push(sample.oom_score);
+      }}
+      if (sample.dram_avg_mib !== null || sample.dram_min_mib !== null || sample.dram_max_mib !== null) {{
+        hasDramData = true;
+        if (sample.dram_avg_mib !== null) {{ xUpdates[2].push(t); yUpdates[2].push(sample.dram_avg_mib); }}
+        if (sample.dram_min_mib !== null) {{ xUpdates[3].push(t); yUpdates[3].push(sample.dram_min_mib); }}
+        if (sample.dram_max_mib !== null) {{ xUpdates[4].push(t); yUpdates[4].push(sample.dram_max_mib); }}
+      }}
+
+      lastTimestamp = sample.timestamp_utc;
+    }}
+
+    async function refreshLoop() {{
+      try {{
+        const q = lastTimestamp ? `?since=${{encodeURIComponent(lastTimestamp)}}` : "";
+        const resp = await fetch(`/api/samples${{q}}`, {{ cache: "no-store" }});
+        if (!resp.ok) {{
+          setStatus(`Error: HTTP ${{resp.status}}`);
+          return;
+        }}
+
+        const payload = await resp.json();
+        const xUpdates = [[], [], [], [], [], []];
+        const yUpdates = [[], [], [], [], [], []];
+        for (const sample of payload.samples) {{
+          queueSample(sample, xUpdates, yUpdates);
+        }}
+
+        const traceIndices = [];
+        const update = {{ x: [], y: [] }};
+        for (let i = 0; i < xUpdates.length; i += 1) {{
+          if (xUpdates[i].length > 0) {{
+            traceIndices.push(i);
+            update.x.push(xUpdates[i]);
+            update.y.push(yUpdates[i]);
+          }}
+        }}
+        if (traceIndices.length > 0) {{
+          Plotly.extendTraces("plot", update, traceIndices);
+        }}
+
+        applyVisibility();
+        const doneText = payload.sampling_done ? " (sampling finished)" : "";
+        setStatus(`Updated: ${{payload.sample_count}} samples${{doneText}}`);
+      }} catch (err) {{
+        setStatus(`Error: ${{err}}`);
+      }}
+    }}
+
+    async function init() {{
+      try {{
+        const metaResp = await fetch("/api/meta", {{ cache: "no-store" }});
+        const meta = await metaResp.json();
+        document.getElementById("proc").textContent = `PID=${{meta.pid}}  CSV=${{meta.csv_path}}`;
+      }} catch (_e) {{
+        document.getElementById("proc").textContent = "Metadata unavailable";
+      }}
+      await refreshLoop();
+      setInterval(refreshLoop, refreshMs);
+    }}
+
+    init();
+  </script>
+</body>
+</html>
+"""
+
+
+def _build_csv_header(include_dram: bool) -> list[str]:
+    header = [
+        "timestamp_utc", "pid", "process_name",
+        "rss_bytes", "rss_mib",
+        "swap_bytes", "swap_mib",
+        "oom_score",
+    ]
+    if include_dram:
+        header += list(_DRAM_CSV_COLS)
+    return header
+
+
+def _collect_sample_row(
+    proc: psutil.Process,
+    target_pid: int,
+    proc_name: str,
+    target_create_time: float,
+    dram_sampler: DeviceDramSampler | None,
+) -> list[str | int | float] | None:
+    try:
+        if not proc.is_running() or proc.create_time() != target_create_time:
+            print(f"PID {target_pid} exited/restarted; stopping sampler.")
+            return None
+        # Avoid memory_full_info() — on Linux it parses /proc/[pid]/smaps
+        # which is expensive and perturbs high-frequency sampling.
+        mem_info = proc.memory_info()
+        rss_bytes = mem_info.rss
+        swap_bytes = get_swap_bytes(target_pid)
+        oom_score = get_oom_score(target_pid)
+    except psutil.NoSuchProcess:
+        print(f"PID {target_pid} exited; stopping sampler.")
+        return None
+
+    ts = datetime.now(timezone.utc).isoformat()
+    row: list[str | int | float] = [
+        ts, target_pid, proc_name,
+        rss_bytes, round(bytes_to_mib(rss_bytes), 3),
+        swap_bytes, round(bytes_to_mib(swap_bytes), 3),
+        oom_score if oom_score is not None else "",
+    ]
+
+    if dram_sampler is not None:
+        stats = dram_sampler.sample()
+        if stats is not None:
+            row += [
+                stats["chip_count"],
+                stats["dram_total_mib"],
+                stats["dram_avg_mib"],
+                stats["dram_min_mib"],
+                stats["dram_max_mib"],
+            ]
+        else:
+            row += ["", "", "", "", ""]
+
+    return row
+
+
+class LiveCsvState:
+    def __init__(self, csv_path: Path, process_name: str, pid: int, refresh_ms: int):
+        self.csv_path = csv_path
+        self.process_name = process_name
+        self.pid = pid
+        self.refresh_ms = refresh_ms
+        self.lock = threading.Lock()
+        self.file_offset = 0
+        self.partial_line = ""
+        self.fieldnames: list[str] | None = None
+        self.samples: list[dict[str, str | int | float | None]] = []
+        self.has_oom_data = False
+        self.has_dram_data = False
+        self.sampling_done = False
+
+    def mark_sampling_done(self):
+        with self.lock:
+            self.sampling_done = True
+
+    def ingest_new_rows(self):
+        try:
+            with self.csv_path.open("r", newline="") as f:
+                f.seek(self.file_offset)
+                chunk = f.read()
+                self.file_offset = f.tell()
+        except FileNotFoundError:
+            return
+
+        if not chunk:
+            return
+
+        text = self.partial_line + chunk
+        if not text:
+            return
+        if not text.endswith("\n"):
+            if "\n" not in text:
+                self.partial_line = text
+                return
+            text, self.partial_line = text.rsplit("\n", 1)
+        else:
+            self.partial_line = ""
+
+        lines = text.splitlines()
+        if not lines:
+            return
+
+        start_idx = 0
+        if self.fieldnames is None:
+            self.fieldnames = next(csv.reader([lines[0]]), [])
+            start_idx = 1
+
+        if start_idx >= len(lines) or not self.fieldnames:
+            return
+
+        reader = csv.DictReader(io.StringIO("\n".join(lines[start_idx:])), fieldnames=self.fieldnames)
+        new_samples = []
+        has_oom_data = False
+        has_dram_data = False
+
+        for row in reader:
+            timestamp_utc = (row.get("timestamp_utc") or "").strip()
+            if not timestamp_utc:
+                continue
+
+            oom_score = _row_int_or_none(row, "oom_score")
+            dram_avg = row.get("dram_avg_mib")
+            dram_min = row.get("dram_min_mib")
+            dram_max = row.get("dram_max_mib")
+            dram_avg_mib = _row_float(row, "dram_avg_mib") if dram_avg not in (None, "") else None
+            dram_min_mib = _row_float(row, "dram_min_mib") if dram_min not in (None, "") else None
+            dram_max_mib = _row_float(row, "dram_max_mib") if dram_max not in (None, "") else None
+
+            sample = {
+                "timestamp_utc": timestamp_utc,
+                "rss_mib": _row_float(row, "rss_mib"),
+                "swap_mib": _row_float(row, "swap_mib"),
+                "oom_score": oom_score,
+                "dram_avg_mib": dram_avg_mib,
+                "dram_min_mib": dram_min_mib,
+                "dram_max_mib": dram_max_mib,
+            }
+            new_samples.append(sample)
+
+            if oom_score is not None:
+                has_oom_data = True
+            if dram_avg_mib is not None or dram_min_mib is not None or dram_max_mib is not None:
+                has_dram_data = True
+
+        if not new_samples:
+            return
+
+        with self.lock:
+            self.samples.extend(new_samples)
+            self.has_oom_data = self.has_oom_data or has_oom_data
+            self.has_dram_data = self.has_dram_data or has_dram_data
+
+    def get_meta(self) -> dict[str, str | int | bool]:
+        with self.lock:
+            return {
+                "process_name": self.process_name,
+                "pid": self.pid,
+                "csv_path": str(self.csv_path),
+                "refresh_ms": self.refresh_ms,
+                "has_oom_data": self.has_oom_data,
+                "has_dram_data": self.has_dram_data,
+                "sampling_done": self.sampling_done,
+            }
+
+    def get_samples_since(self, since: str | None) -> dict[str, object]:
+        with self.lock:
+            if since:
+                samples = [sample for sample in self.samples if str(sample["timestamp_utc"]) > since]
+            else:
+                samples = list(self.samples)
+            return {
+                "samples": samples,
+                "sample_count": len(self.samples),
+                "sampling_done": self.sampling_done,
+                "has_oom_data": self.has_oom_data,
+                "has_dram_data": self.has_dram_data,
+            }
+
+
+def _make_live_handler(state: LiveCsvState):
+    class _LiveHandler(BaseHTTPRequestHandler):
+        def _send(self, code: int, content_type: str, body: str):
+            payload = body.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def do_GET(self):
+            parsed = urlparse(self.path)
+            if parsed.path == "/":
+                html = _build_live_dashboard_html(state.process_name, state.refresh_ms)
+                self._send(200, "text/html; charset=utf-8", html)
+                return
+
+            if parsed.path == "/api/meta":
+                self._send(200, "application/json; charset=utf-8", json.dumps(state.get_meta()))
+                return
+
+            if parsed.path == "/api/samples":
+                since = parse_qs(parsed.query).get("since", [None])[0]
+                payload = state.get_samples_since(since)
+                self._send(200, "application/json; charset=utf-8", json.dumps(payload))
+                return
+
+            self._send(404, "text/plain; charset=utf-8", "Not found")
+
+        def log_message(self, format: str, *args):
+            return
+
+    return _LiveHandler
+
+
+def _sampling_worker(
+    proc: psutil.Process,
+    target_pid: int,
+    proc_name: str,
+    target_create_time: float,
+    args,
+    dram_sampler: DeviceDramSampler | None,
+    stop_event: threading.Event,
+    live_state: LiveCsvState | None = None,
+):
+    try:
+        with args.csv.open("a", newline="") as f:
+            writer = csv.writer(f)
+            while not stop_event.is_set():
+                row = _collect_sample_row(
+                    proc, target_pid, proc_name, target_create_time, dram_sampler
+                )
+                if row is None:
+                    break
+                writer.writerow(row)
+                f.flush()
+                if stop_event.wait(args.interval):
+                    break
+    finally:
+        if live_state is not None:
+            live_state.mark_sampling_done()
+
+
+def _live_tail_worker(live_state: LiveCsvState, stop_event: threading.Event):
+    poll_seconds = max(0.2, live_state.refresh_ms / 1000.0)
+    while not stop_event.is_set():
+        live_state.ingest_new_rows()
+        stop_event.wait(poll_seconds)
+    live_state.ingest_new_rows()
+
+
+def run_live_monitor(args):
+    if args.live_refresh_ms <= 0:
+        print("--live-refresh-ms must be > 0.")
+        return
+
+    try:
+        proc = resolve_target_process(args)
+    except KeyboardInterrupt:
+        print("\nStopped before attaching to a process.")
+        return
+    if proc is None:
+        return
+
+    target_pid = proc.pid
+    proc_name = proc.name()
+    target_create_time = proc.create_time()
+    dram_sampler = DeviceDramSampler() if args.device_dram else None
+
+    if dram_sampler is not None and not glob.glob(DeviceDramSampler._SHM_GLOB):
+        print("WARNING: --device-dram enabled but no /dev/shm/tt_device_*_memory files found. "
+              "Will keep trying each interval.")
+
+    with args.csv.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(_build_csv_header(dram_sampler is not None))
+        f.flush()
+
+    live_state = LiveCsvState(args.csv, proc_name, target_pid, args.live_refresh_ms)
+    stop_event = threading.Event()
+
+    handler_cls = _make_live_handler(live_state)
+    try:
+        server = ThreadingHTTPServer((args.live_host, args.live_port), handler_cls)
+    except OSError as exc:
+        print(f"Failed to bind live server on {args.live_host}:{args.live_port}: {exc}")
+        return
+
+    sample_thread = threading.Thread(
+        target=_sampling_worker,
+        args=(proc, target_pid, proc_name, target_create_time, args, dram_sampler, stop_event, live_state),
+        daemon=True,
+    )
+    tail_thread = threading.Thread(
+        target=_live_tail_worker,
+        args=(live_state, stop_event),
+        daemon=True,
+    )
+    sample_thread.start()
+    tail_thread.start()
+
+    print(
+        f"Live mode enabled for PID={target_pid} ({proc_name}) every {args.interval}s"
+        + (" + device DRAM" if dram_sampler else "")
+        + f"\nCSV → {args.csv}"
+        + f"\nLive dashboard → http://{args.live_host}:{args.live_port}"
+        + f"\nTunnel (run on local machine): ssh -L {args.live_port}:localhost:{args.live_port} user@remote-host"
+        + "\nCtrl+C to stop."
+    )
+
+    try:
+        server.serve_forever(poll_interval=0.5)
+    except KeyboardInterrupt:
+        print("\nStopping live dashboard...")
+    finally:
+        stop_event.set()
+        server.shutdown()
+        server.server_close()
+        sample_thread.join(timeout=2.0)
+        tail_thread.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
 # CSV helpers
 # ---------------------------------------------------------------------------
 
@@ -694,14 +1209,7 @@ def run_monitor(args):
         print("WARNING: --device-dram enabled but no /dev/shm/tt_device_*_memory files found. "
               "Will keep trying each interval.")
 
-    header = [
-        "timestamp_utc", "pid", "process_name",
-        "rss_bytes", "rss_mib",
-        "swap_bytes", "swap_mib",
-        "oom_score",
-    ]
-    if dram_sampler is not None:
-        header += list(_DRAM_CSV_COLS)
+    header = _build_csv_header(dram_sampler is not None)
 
     output_kind, output_path = _resolve_output(args, Path("pid_memory.png"), Path("pid_memory.html"))
     print(
@@ -716,40 +1224,11 @@ def run_monitor(args):
 
         try:
             while True:
-                try:
-                    if not proc.is_running() or proc.create_time() != target_create_time:
-                        print(f"PID {target_pid} exited/restarted; stopping sampler.")
-                        break
-                    # Avoid memory_full_info() — on Linux it parses /proc/[pid]/smaps
-                    # which is expensive and perturbs high-frequency sampling.
-                    mem_info = proc.memory_info()
-                    rss_bytes = mem_info.rss
-                    swap_bytes = get_swap_bytes(target_pid)
-                    oom_score = get_oom_score(target_pid)
-                except psutil.NoSuchProcess:
-                    print(f"PID {target_pid} exited; stopping sampler.")
+                row = _collect_sample_row(
+                    proc, target_pid, proc_name, target_create_time, dram_sampler
+                )
+                if row is None:
                     break
-
-                ts = datetime.now(timezone.utc).isoformat()
-                row = [
-                    ts, target_pid, proc_name,
-                    rss_bytes, round(bytes_to_mib(rss_bytes), 3),
-                    swap_bytes, round(bytes_to_mib(swap_bytes), 3),
-                    oom_score if oom_score is not None else "",
-                ]
-
-                if dram_sampler is not None:
-                    stats = dram_sampler.sample()
-                    if stats is not None:
-                        row += [
-                            stats["chip_count"],
-                            stats["dram_total_mib"],
-                            stats["dram_avg_mib"],
-                            stats["dram_min_mib"],
-                            stats["dram_max_mib"],
-                        ]
-                    else:
-                        row += ["", "", "", "", ""]
 
                 writer.writerow(row)
                 f.flush()
@@ -783,6 +1262,10 @@ def _render(csv_path: Path, output_kind: str, output_path: Path, process_name: s
 def main():
     args = parse_args()
 
+    if args.live and args.from_csv:
+        print("--live cannot be combined with --from-csv.")
+        return
+
     if args.from_csv:
         csv_paths = args.from_csv
         if len(csv_paths) > 1:
@@ -804,6 +1287,10 @@ def main():
         )
         process_name = infer_process_name_from_csv(csv_paths[0])
         _render(csv_paths[0], output_kind, output_path, process_name)
+        return
+
+    if args.live:
+        run_live_monitor(args)
         return
 
     run_monitor(args)
