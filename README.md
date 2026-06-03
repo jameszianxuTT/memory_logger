@@ -116,6 +116,6 @@ Plotly HTML:
 
 <img width="1895" height="440" alt="image" src="https://github.com/user-attachments/assets/c3a4b18b-ed3b-4134-b9a8-4c9a9483f2a4" />
 
-PNG:
+PNG (and example analysis)
 
 <img width="760" height="619" alt="image" src="https://github.com/user-attachments/assets/510a0b5a-6673-4346-8ccd-1a858658b209" />
