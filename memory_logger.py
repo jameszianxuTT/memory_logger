@@ -350,8 +350,8 @@ def generate_plot(csv_path: Path, png_path: Path, process_name: str):
     has_dram_data = has_dram and any(dram_present_flags)
 
     fig, ax_mem = plt.subplots(1, 1, figsize=(12, 5.2))
-    ax_mem.plot(timestamps, rss_mib, linewidth=2, label="RSS (MiB)", color="tab:blue")
-    ax_mem.plot(timestamps, swap_mib, linewidth=2, label="Swap (MiB)", color="tab:orange")
+    ax_mem.plot(timestamps, rss_mib, linewidth=1.5, label="RSS (MiB)", color="tab:blue")
+    ax_mem.plot(timestamps, swap_mib, linewidth=1.5, label="Swap (MiB)", color="tab:orange")
 
     if has_dram_data:
         n_chips = max(dram_chip_count) if dram_chip_count else 0
@@ -366,14 +366,14 @@ def generate_plot(csv_path: Path, png_path: Path, process_name: str):
         ax_mem.plot(
             timestamps,
             dram_avg_mib,
-            linewidth=2.3,
+            linewidth=1.8,
             color="tab:green",
             label="DRAM Avg/chip (MiB)",
         )
         ax_mem.plot(
             timestamps,
             dram_min_mib,
-            linewidth=1,
+            linewidth=0.8,
             color="seagreen",
             linestyle="--",
             label="DRAM Min/chip (MiB)",
@@ -381,7 +381,7 @@ def generate_plot(csv_path: Path, png_path: Path, process_name: str):
         ax_mem.plot(
             timestamps,
             dram_max_mib,
-            linewidth=1,
+            linewidth=0.8,
             color="darkgreen",
             linestyle="--",
             label="DRAM Max/chip (MiB)",
@@ -394,7 +394,7 @@ def generate_plot(csv_path: Path, png_path: Path, process_name: str):
     has_oom_data = any(s is not None for s in oom_scores)
     if has_oom_data:
         ax_oom = ax_mem.twinx()
-        ax_oom.plot(timestamps, oom_scores, linewidth=2, label="OOM Score", color="tab:red", linestyle="--")
+        ax_oom.plot(timestamps, oom_scores, linewidth=1.5, label="OOM Score", color="tab:red", linestyle="--")
         ax_oom.set_ylabel("OOM Score (0–1000)")
         ax_oom.set_ylim(0, 1000)
         lines1, labels1 = ax_mem.get_legend_handles_labels()
@@ -402,21 +402,21 @@ def generate_plot(csv_path: Path, png_path: Path, process_name: str):
         ax_mem.legend(
             lines1 + lines2,
             labels1 + labels2,
-            loc="upper left",
-            bbox_to_anchor=(1.02, 1.0),
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.18),
             borderaxespad=0.0,
             fontsize=8,
             framealpha=0.9,
-            ncol=1,
+            ncol=3,
         )
     else:
         ax_mem.legend(
-            loc="upper left",
-            bbox_to_anchor=(1.02, 1.0),
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.18),
             borderaxespad=0.0,
             fontsize=8,
             framealpha=0.9,
-            ncol=1,
+            ncol=3,
         )
 
     ax_mem.set_xlabel("Time (UTC)")
@@ -424,7 +424,7 @@ def generate_plot(csv_path: Path, png_path: Path, process_name: str):
     ax_mem.tick_params(axis="x", which="both", labelbottom=True)
 
     fig.autofmt_xdate()
-    plt.tight_layout(rect=[0.0, 0.0, 0.82, 1.0])
+    plt.tight_layout(rect=[0.0, 0.08, 1.0, 1.0])
     plt.savefig(png_path, dpi=150)
     plt.close(fig)
     print(f"Saved plot: {png_path}")
@@ -508,8 +508,8 @@ def generate_plot_multi_csv(csv_paths: list[Path], png_path: Path):
         dram_max_mib = data["dram_max_mib"]
         dram_chip_count = data["dram_chip_count"]
 
-        ax.plot(timestamps, rss_mib, linewidth=2, label="RSS (MiB)", color="tab:blue")
-        ax.plot(timestamps, swap_mib, linewidth=2, label="Swap (MiB)", color="tab:orange")
+        ax.plot(timestamps, rss_mib, linewidth=1.5, label="RSS (MiB)", color="tab:blue")
+        ax.plot(timestamps, swap_mib, linewidth=1.5, label="Swap (MiB)", color="tab:orange")
 
         if has_dram_data:
             n_chips = max(dram_chip_count) if dram_chip_count else 0
@@ -524,14 +524,14 @@ def generate_plot_multi_csv(csv_paths: list[Path], png_path: Path):
             ax.plot(
                 timestamps,
                 dram_avg_mib,
-                linewidth=2.3,
+                linewidth=1.8,
                 color="tab:green",
                 label="DRAM Avg/chip (MiB)",
             )
             ax.plot(
                 timestamps,
                 dram_min_mib,
-                linewidth=1,
+                linewidth=0.8,
                 color="seagreen",
                 linestyle="--",
                 label="DRAM Min/chip (MiB)",
@@ -539,7 +539,7 @@ def generate_plot_multi_csv(csv_paths: list[Path], png_path: Path):
             ax.plot(
                 timestamps,
                 dram_max_mib,
-                linewidth=1,
+                linewidth=0.8,
                 color="darkgreen",
                 linestyle="--",
                 label="DRAM Max/chip (MiB)",
@@ -556,7 +556,7 @@ def generate_plot_multi_csv(csv_paths: list[Path], png_path: Path):
             ax_oom.plot(
                 timestamps,
                 oom_scores,
-                linewidth=2,
+                linewidth=1.5,
                 label="OOM Score",
                 color="tab:red",
                 linestyle="--",
@@ -568,21 +568,21 @@ def generate_plot_multi_csv(csv_paths: list[Path], png_path: Path):
             ax.legend(
                 lines1 + lines2,
                 labels1 + labels2,
-                loc="upper left",
-                bbox_to_anchor=(1.02, 1.0),
+                loc="upper center",
+                bbox_to_anchor=(0.5, -0.18),
                 borderaxespad=0.0,
                 fontsize=8,
                 framealpha=0.9,
-                ncol=1,
+                ncol=3,
             )
         else:
             ax.legend(
-                loc="upper left",
-                bbox_to_anchor=(1.02, 1.0),
+                loc="upper center",
+                bbox_to_anchor=(0.5, -0.18),
                 borderaxespad=0.0,
                 fontsize=8,
                 framealpha=0.9,
-                ncol=1,
+                ncol=3,
             )
 
     for ax in axes:
@@ -591,7 +591,7 @@ def generate_plot_multi_csv(csv_paths: list[Path], png_path: Path):
         ax.tick_params(axis="x", which="both", labelbottom=True)
 
     fig.autofmt_xdate()
-    plt.tight_layout(rect=[0.0, 0.0, 0.82, 1.0])
+    plt.tight_layout(rect=[0.0, 0.08, 1.0, 1.0])
     plt.savefig(png_path, dpi=150)
     plt.close(fig)
     print(f"Saved plot: {png_path}")
