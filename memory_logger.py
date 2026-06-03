@@ -211,7 +211,11 @@ def parse_args():
     target_group.add_argument(
         "--from-csv",
         type=Path,
-        help="Re-render a PNG from an existing CSV without attaching to a process",
+        action="append",
+        help=(
+            "Re-render plot(s) from existing CSV(s) without attaching to a process. "
+            "Repeat flag to stack multiple CSVs as subplots with a unified time axis."
+        ),
     )
     parser.add_argument("--interval", type=float, default=1.0, help="Sampling interval in seconds")
     parser.add_argument(
@@ -362,6 +366,94 @@ def generate_plot(csv_path: Path, png_path: Path, process_name: str):
         ax_dram.legend(loc="upper left")
 
     # Show x-axis label/ticks on every subplot for readability in stacked PNGs.
+    for ax in axes:
+        ax.set_xlabel("Time (UTC)")
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
+        ax.tick_params(axis="x", which="both", labelbottom=True)
+
+    fig.autofmt_xdate()
+    plt.tight_layout()
+    plt.savefig(png_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved plot: {png_path}")
+
+
+def generate_plot_multi_csv(csv_paths: list[Path], png_path: Path):
+    datasets = []
+
+    for csv_path in csv_paths:
+        timestamps = []
+        rss_mib = []
+        swap_mib = []
+        oom_scores = []
+
+        with csv_path.open("r", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                timestamps.append(datetime.fromisoformat(row["timestamp_utc"]))
+                rss_mib.append(float(row["rss_mib"]))
+                swap_mib.append(float(row["swap_mib"]))
+                oom_scores.append(int(row["oom_score"]) if row.get("oom_score") else None)
+
+        if not timestamps:
+            print(f"No samples in {csv_path}, skipping.")
+            continue
+
+        datasets.append(
+            {
+                "csv_path": csv_path,
+                "process_name": infer_process_name_from_csv(csv_path),
+                "timestamps": timestamps,
+                "rss_mib": rss_mib,
+                "swap_mib": swap_mib,
+                "oom_scores": oom_scores,
+            }
+        )
+
+    if not datasets:
+        print("No samples collected across input CSVs, skipping plot.")
+        return
+
+    nrows = len(datasets)
+    fig, axes = plt.subplots(nrows, 1, figsize=(12, 4.5 * nrows), sharex=True)
+    if nrows == 1:
+        axes = [axes]
+
+    global_start = min(min(d["timestamps"]) for d in datasets)
+    global_end = max(max(d["timestamps"]) for d in datasets)
+
+    for ax, data in zip(axes, datasets):
+        timestamps = data["timestamps"]
+        rss_mib = data["rss_mib"]
+        swap_mib = data["swap_mib"]
+        oom_scores = data["oom_scores"]
+
+        ax.plot(timestamps, rss_mib, linewidth=2, label="RSS (MiB)", color="tab:blue")
+        ax.plot(timestamps, swap_mib, linewidth=2, label="Swap (MiB)", color="tab:orange")
+        ax.set_ylabel("Memory (MiB)")
+        ax.set_title(f"{data['process_name']} — {data['csv_path'].name}")
+        apply_grid_with_subgrid(ax)
+        ax.set_xlim(global_start, global_end)
+
+        has_oom_data = any(score is not None for score in oom_scores)
+        if has_oom_data:
+            ax_oom = ax.twinx()
+            ax_oom.plot(
+                timestamps,
+                oom_scores,
+                linewidth=2,
+                label="OOM Score",
+                color="tab:red",
+                linestyle="--",
+            )
+            ax_oom.set_ylabel("OOM Score (0–1000)")
+            ax_oom.set_ylim(0, 1000)
+            lines1, labels1 = ax.get_legend_handles_labels()
+            lines2, labels2 = ax_oom.get_legend_handles_labels()
+            ax.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
+        else:
+            ax.legend(loc="upper left")
+
     for ax in axes:
         ax.set_xlabel("Time (UTC)")
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
@@ -554,14 +646,27 @@ def _render(csv_path: Path, output_kind: str, output_path: Path, process_name: s
 def main():
     args = parse_args()
 
-    if args.from_csv is not None:
+    if args.from_csv:
+        csv_paths = args.from_csv
+        if len(csv_paths) > 1:
+            output_kind, output_path = _resolve_output(
+                args,
+                csv_paths[0].with_name("merged_pid_memory.png"),
+                csv_paths[0].with_name("merged_pid_memory.html"),
+            )
+            if output_kind == "html":
+                print("Multi-CSV rendering is currently PNG-only. Use --png or omit --html.")
+                return
+            generate_plot_multi_csv(csv_paths, output_path)
+            return
+
         output_kind, output_path = _resolve_output(
             args,
-            args.from_csv.with_suffix(".png"),
-            args.from_csv.with_suffix(".html"),
+            csv_paths[0].with_suffix(".png"),
+            csv_paths[0].with_suffix(".html"),
         )
-        process_name = infer_process_name_from_csv(args.from_csv)
-        _render(args.from_csv, output_kind, output_path, process_name)
+        process_name = infer_process_name_from_csv(csv_paths[0])
+        _render(csv_paths[0], output_kind, output_path, process_name)
         return
 
     run_monitor(args)
