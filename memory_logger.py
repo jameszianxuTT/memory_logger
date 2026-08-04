@@ -265,7 +265,7 @@ def parse_args():
             "Repeat flag to stack multiple CSVs as subplots with a unified time axis."
         ),
     )
-    parser.add_argument("--interval", type=float, default=1.0, help="Sampling interval in seconds")
+    parser.add_argument("--interval", type=float, default=0.1, help="Sampling interval in seconds")
     parser.add_argument(
         "--poll-interval",
         type=float,
