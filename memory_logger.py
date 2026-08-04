@@ -288,7 +288,7 @@ def parse_args():
         nargs="?",
         const=Path("pid_memory.html"),
         default=None,
-        help="Generate interactive HTML plot via plotly. Device DRAM subplot not yet supported in HTML mode.",
+        help="Generate interactive HTML plot via plotly.",
     )
     parser.add_argument(
         "--device-dram",
@@ -632,7 +632,7 @@ def generate_plot_multi_csv(csv_paths: list[Path], png_path: Path):
 
 
 def generate_plot_html(csv_path: Path, html_path: Path, process_name: str):
-    """Interactive HTML via plotly. DRAM columns are present in the CSV but not rendered here."""
+    """Interactive HTML via plotly."""
     try:
         import plotly.graph_objects as go
         from plotly.subplots import make_subplots
@@ -644,19 +644,37 @@ def generate_plot_html(csv_path: Path, html_path: Path, process_name: str):
     rss_mib = []
     swap_mib = []
     oom_scores = []
+    dram_avg_mib = []
+    dram_min_mib = []
+    dram_max_mib = []
+    dram_chip_count = []
+    dram_present_flags = []
 
     with csv_path.open("r", newline="") as f:
         reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames or []
+        has_dram = "dram_avg_mib" in fieldnames
         for row in reader:
             timestamps.append(datetime.fromisoformat(row["timestamp_utc"]))
             rss_mib.append(_row_float(row, "rss_mib"))
             swap_mib.append(_row_float(row, "swap_mib"))
             oom_scores.append(_row_int_or_none(row, "oom_score"))
+            if has_dram:
+                dram_avg_mib.append(_row_float(row, "dram_avg_mib"))
+                dram_min_mib.append(_row_float(row, "dram_min_mib"))
+                dram_max_mib.append(_row_float(row, "dram_max_mib"))
+                dram_chip_count.append(_row_int_or_none(row, "dram_chip_count") or 0)
+                dram_present_flags.append(
+                    row.get("dram_avg_mib") not in (None, "")
+                    or row.get("dram_min_mib") not in (None, "")
+                    or row.get("dram_max_mib") not in (None, "")
+                )
 
     if not timestamps:
         print("No samples collected, skipping interactive plot.")
         return
 
+    has_dram_data = has_dram and any(dram_present_flags)
     has_oom_data = any(s is not None for s in oom_scores)
 
     specs = [[{"secondary_y": has_oom_data}]]
@@ -664,6 +682,67 @@ def generate_plot_html(csv_path: Path, html_path: Path, process_name: str):
 
     fig.add_trace(go.Scatter(x=timestamps, y=rss_mib, mode="lines", name="RSS (MiB)", line={"width": 2, "color": "royalblue"}), row=1, col=1)
     fig.add_trace(go.Scatter(x=timestamps, y=swap_mib, mode="lines", name="Swap (MiB)", line={"width": 2, "color": "orange"}), row=1, col=1)
+    if has_dram_data:
+        n_chips = max(dram_chip_count) if dram_chip_count else 0
+        fig.add_trace(
+            go.Scatter(
+                x=timestamps,
+                y=dram_max_mib,
+                mode="lines",
+                line={"width": 0, "color": "rgba(0,0,0,0)"},
+                hoverinfo="skip",
+                showlegend=False,
+                name=f"DRAM Min–Max ({n_chips} chip(s))",
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=timestamps,
+                y=dram_min_mib,
+                mode="lines",
+                fill="tonexty",
+                fillcolor="rgba(44, 160, 44, 0.12)",
+                line={"width": 0, "color": "rgba(0,0,0,0)"},
+                name=f"DRAM Min–Max ({n_chips} chip(s))",
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=timestamps,
+                y=dram_avg_mib,
+                mode="lines",
+                name="DRAM Avg/chip (MiB)",
+                line={"width": 1.8, "color": "green"},
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=timestamps,
+                y=dram_min_mib,
+                mode="lines",
+                name="DRAM Min/chip (MiB)",
+                line={"width": 0.8, "color": "seagreen", "dash": "dash"},
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=timestamps,
+                y=dram_max_mib,
+                mode="lines",
+                name="DRAM Max/chip (MiB)",
+                line={"width": 0.8, "color": "darkgreen", "dash": "dash"},
+            ),
+            row=1,
+            col=1,
+        )
     if has_oom_data:
         fig.add_trace(
             go.Scatter(x=timestamps, y=oom_scores, mode="lines", name="OOM Score",
